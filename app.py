@@ -1,20 +1,24 @@
 import os
-from flask import Flask, flash, request, redirect, url_for,jsonify
+from flask import Flask, request, jsonify
 from werkzeug.utils import secure_filename
 import pyrebase
 from dotenv import load_dotenv
-
+from PIL import Image
+import io
 
 load_dotenv()
 
+def change_to_mbs(bytes):
+    return bytes / (1024 * 1024)
 
 UPLOAD_FOLDER = 'uploads'
 ALLOWED_EXTENSIONS = {'txt', 'pdf', 'png', 'jpg', 'jpeg', 'gif'}
-app=Flask(__name__)
+MAX_CONTENT_LENGTH = 1024 * 1024  # 1MB
+
+app = Flask(__name__)
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 
-def save_image_to_firebase(cloud_name:str,local_name:str):
-    
+def save_image_to_firebase(cloud_name: str, local_name: str):
     config = {
         "apiKey": os.getenv('FIREBASE_API_KEY'),
         "authDomain": os.getenv('FIREBASE_AUTH_DOMAIN'),
@@ -26,48 +30,73 @@ def save_image_to_firebase(cloud_name:str,local_name:str):
         "serviceAccount": os.getenv('FIREBASE_SERVICE_ACCOUNT'),
         "databaseURL": os.getenv('FIREBASE_DATABASE_URL')
     }
-    print(config)
-    input("ahsan")
-    firebase=pyrebase.initialize_app(config)
-    storage=firebase.storage()
-    
-    
 
+    firebase = pyrebase.initialize_app(config)
+    storage = firebase.storage()
+    
     storage.child(cloud_name).put(local_name)
 
+def allowed_filename(filename: str):
+    return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
+def resize_image(image, max_size_kb):
+    img_format = image.format
+    output = io.BytesIO()
+    image.save(output, format=img_format)
+    output.seek(0)
+    size_kb = len(output.getvalue()) / 1024
+    quality = 95
+    width, height = image.size
 
-def allowed_filename(filename:str):
+    while size_kb > max_size_kb and quality > 10:
+        width = int(width * 0.9)
+        height = int(height * 0.9)
+        image = image.resize((width, height), Image.LANCZOS)
+        output = io.BytesIO()
+        image.save(output, format=img_format, quality=quality)
+        output.seek(0)
+        size_kb = len(output.getvalue()) / 1024
+        quality -= 5
     
-    return '.' in filename and filename.split(".")[1] in ALLOWED_EXTENSIONS
+    output.seek(0)
+    return Image.open(output)
 
-
-@app.route("/upload",methods=["POST"])
+@app.route("/upload", methods=["POST"])
 def upload():
-    if not request.files:
-        return jsonify({"error":"no file selected"}),403
-    print(os.listdir())
+    if 'img' not in request.files:
+        return jsonify({"error": "no file selected"}), 403
 
-    file=request.files["img"]
+    file = request.files['img']
+    if file.filename == '':
+        return jsonify({"error": "no file sent"}), 403
     
-    if file.filename=='':
-        return jsonify({"error":"no file send"}),403
     if allowed_filename(file.filename):
-        new_name=secure_filename(file.filename)
-        complete_name_with_folder=os.path.join(UPLOAD_FOLDER,new_name)
-        print("new name",new_name)
+        new_name = secure_filename(file.filename)
+        complete_name_with_folder = os.path.join(UPLOAD_FOLDER, new_name)
+        print("new name", new_name)
+        
         file.save(complete_name_with_folder)
-        print("firebase")
-        save_image_to_firebase(new_name,complete_name_with_folder)
-        print("deletion")
+        size_in_bytes = os.path.getsize(complete_name_with_folder)
+        size_in_mbs = change_to_mbs(size_in_bytes)
+        print("size of image : ", size_in_mbs, " MBS")
+        
+        if size_in_mbs > 1:
+            print("size greater than 1 MB, resizing")
+            image = Image.open(complete_name_with_folder)
+            resized_image = resize_image(image, max_size_kb=1024)
+            resized_image.save(complete_name_with_folder)
+
+        print("saving on firebase")
+        save_image_to_firebase(new_name, complete_name_with_folder)
+        
+        print("deleting local copy of image")
         os.remove(complete_name_with_folder)
+        return jsonify({"response": "successfully saved image"}), 200
 
+    return jsonify({"response": "Image type not allowed"}), 403
 
-
-    
-    return jsonify({"response":"received"}),200
-
-
-
-if __name__=='__main__':
+if __name__ == '__main__':
     app.run(debug=True)
+    # Ensure the upload folder exists
+    if not os.path.exists(UPLOAD_FOLDER):
+        os.makedirs(UPLOAD_FOLDER)
