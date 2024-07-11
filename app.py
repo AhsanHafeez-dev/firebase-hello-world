@@ -5,6 +5,7 @@ import pyrebase
 from dotenv import load_dotenv
 from PIL import Image
 import io
+from flasgger import Swagger, swag_from
 
 load_dotenv()
 
@@ -17,6 +18,7 @@ MAX_CONTENT_LENGTH = 1024 * 1024  # 1MB
 
 app = Flask(__name__)
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
+swagger = Swagger(app)
 
 def save_image_to_firebase(cloud_name: str, local_name: str):
     config = {
@@ -49,19 +51,55 @@ def resize_image(image, max_size_kb):
     width, height = image.size
 
     while size_kb > max_size_kb and quality > 10:
-        width = int(width * 0.9)
-        height = int(height * 0.9)
+        width = int(width   * 0.95)
+        height = int(height * 0.95)
         image = image.resize((width, height), Image.LANCZOS)
         output = io.BytesIO()
-        image.save(output, format=img_format, quality=quality)
+        image.save(output, format=img_format)
         output.seek(0)
         size_kb = len(output.getvalue()) / 1024
-        quality -= 5
     
     output.seek(0)
     return Image.open(output)
 
 @app.route("/upload", methods=["POST"])
+@swag_from({
+    'summary': 'Upload an image',
+    'description': 'Upload an image, resize if necessary, and save to Firebase',
+    'parameters': [
+        {
+            'name': 'img',
+            'in': 'formData',
+            'type': 'file',
+            'required': True,
+            'description': 'The image file to upload'
+        }
+    ],
+    'responses': {
+        200: {
+            'description': 'Successfully saved image',
+            'schema': {
+                'type': 'object',
+                'properties': {
+                    'response': {
+                        'type': 'string'
+                    }
+                }
+            }
+        },
+        403: {
+            'description': 'No file selected or invalid file type',
+            'schema': {
+                'type': 'object',
+                'properties': {
+                    'error': {
+                        'type': 'string'
+                    }
+                }
+            }
+        }
+    }
+})
 def upload():
     if 'img' not in request.files:
         return jsonify({"error": "no file selected"}), 403
